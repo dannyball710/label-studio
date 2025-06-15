@@ -5,6 +5,7 @@ import io
 import logging
 import mimetypes
 import os
+import hashlib
 
 try:
     import ujson as json
@@ -70,14 +71,41 @@ def check_request_files_size(files):
 
 
 def create_file_upload(user, project, file):
-    instance = FileUpload(user=user, project=project, file=file)
+    # Ensure instance is created first to have access to its fields if needed,
+    # though for file_hash, we're adding it directly.
+    instance = FileUpload(user=user, project=project) # Removed file from here initially
+
+    if settings.RECORD_FILE_HASH_AND_PREVENT_DUPLICATES:
+        try:
+            original_position = file.tell() # Store original position of the file pointer
+            file.seek(0) # Go to the beginning of the file to read all its content for hashing
+            file_content = file.read()
+            sha256_hash = hashlib.sha256(file_content).hexdigest()
+            instance.file_hash = sha256_hash
+            file.seek(original_position) # Reset file pointer to its original position
+        except Exception as e:
+            logger.error(f"Error calculating hash for file {file.name}: {e}")
+            # Optionally, decide if you want to clear instance.file_hash or let it be None
+
+    # Now assign the file to the instance
+    instance.file = file
+
     if settings.SVG_SECURITY_CLEANUP:
         content_type, encoding = mimetypes.guess_type(str(instance.file.name))
         if content_type in ['image/svg+xml']:
+            # Reading again, ensure pointer is at start if not already handled
+            # The file pointer should be at original_position (likely 0) due to the hashing logic or
+            # if hashing didn't run, it's as it was passed.
+            # SVG logic needs to ensure it reads from the start.
+            current_pos = instance.file.tell() # For safety, check current pos
+            instance.file.seek(0) # Explicitly seek to start for SVG processing
             clean_xml = allowlist_svg(instance.file.read().decode())
-            instance.file.seek(0)
+            instance.file.seek(0) # Seek to start again to write cleaned content
             instance.file.write(clean_xml.encode())
-            instance.file.truncate()
+            instance.file.truncate() # Remove original content beyond the new cleaned content
+            # If hashing happened, the file pointer was reset by file.seek(original_position).
+            # If SVG cleaning also happens, it needs to manage its own pointer, which it does.
+
     instance.save()
     return instance
 

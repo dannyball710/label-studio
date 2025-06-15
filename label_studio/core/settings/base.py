@@ -665,6 +665,8 @@ FEATURE_FLAGS_OFFLINE = get_bool_env('FEATURE_FLAGS_OFFLINE', True)
 # default value for feature flags (if not overridden by environment or client)
 FEATURE_FLAGS_DEFAULT_VALUE = False
 
+RECORD_FILE_HASH_AND_PREVENT_DUPLICATES = get_bool_env('RECORD_FILE_HASH_AND_PREVENT_DUPLICATES', default=False)
+
 # Whether to send analytics telemetry data. Fall back to old lowercase name for legacy compatibility.
 COLLECT_ANALYTICS = get_bool_env('COLLECT_ANALYTICS', get_bool_env('collect_analytics', True))
 

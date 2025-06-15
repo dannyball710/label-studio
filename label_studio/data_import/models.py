@@ -32,6 +32,7 @@ class FileUpload(models.Model):
     user = models.ForeignKey('users.User', related_name='file_uploads', on_delete=models.CASCADE)
     project = models.ForeignKey('projects.Project', related_name='file_uploads', on_delete=models.CASCADE)
     file = models.FileField(upload_to=upload_name_generator)
+    file_hash = models.CharField(max_length=64, null=True, blank=True, db_index=True) # New field
 
     def has_permission(self, user):
         user.project = self.project  # link for activity log
@@ -67,10 +68,23 @@ class FileUpload(models.Model):
     def content(self):
         # cache file body
         if hasattr(self, '_file_body'):
-            body = getattr(self, '_file_body')
-        else:
+            return getattr(self, '_file_body')
+
+        try:
+            self.file.seek(0) # Ensure reading from the start
             body = self.file.read().decode('utf-8')
-            setattr(self, '_file_body', body)
+            # It's generally good practice to leave the pointer where it was found or at start.
+            # For this property, assume consumers might not expect pointer to move.
+            # However, if _file_body is cached, subsequent calls won't re-read.
+            # For safety, and if this property is the primary way to get content,
+            # leaving it at the start after read could be beneficial for other direct file users.
+            # Given it's cached, this seek might only matter for the first read.
+            self.file.seek(0)
+        except Exception as e:
+            logger.error(f"Error reading file {self.file.name} for content property: {e}")
+            body = "" # Default to empty string on error to prevent crashes
+
+        setattr(self, '_file_body', body)
         return body
 
     def read_tasks_list_from_csv(self, sep=','):
@@ -165,10 +179,31 @@ class FileUpload(models.Model):
         common_data_fields = set()
 
         # scan all files
-        file_uploads = FileUpload.objects.filter(project=project)
+        file_uploads_qs = FileUpload.objects.filter(project=project)
         if file_upload_ids:
-            file_uploads = file_uploads.filter(id__in=file_upload_ids)
-        for file_upload in file_uploads:
+            file_uploads_qs = file_uploads_qs.filter(id__in=file_upload_ids)
+
+        # Ensure predictable order for processing, good for consistency and debugging
+        ordered_file_uploads = file_uploads_qs.order_by('id')
+
+        for file_upload in ordered_file_uploads:
+            if settings.RECORD_FILE_HASH_AND_PREVENT_DUPLICATES and file_upload.file_hash:
+                # Check if a file with the same hash but a smaller ID already exists in this project.
+                # This means we process the file with the smallest ID for a given hash.
+                is_duplicate_of_earlier_file = FileUpload.objects.filter(
+                    project=project,
+                    file_hash=file_upload.file_hash,
+                    id__lt=file_upload.id # Important: only consider files processed earlier (by ID)
+                ).exists()
+
+                if is_duplicate_of_earlier_file:
+                    logger.info( # Changed back to logger.info
+                        f"Skipping file upload ID {file_upload.id} (filename: {file_upload.file_name}) "
+                        f"for project {project.id} as it's a duplicate of an earlier processed file (ID < {file_upload.id}) with hash {file_upload.file_hash}"
+                    )
+                    continue
+
+            # If not a duplicate (or flag/hash not set), proceed to process the file
             file_format = file_upload.format
             if formats and file_format not in formats:
                 continue
